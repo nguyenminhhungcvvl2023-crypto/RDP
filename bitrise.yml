@@ -1,0 +1,304 @@
+---
+format_version: '11'
+default_step_lib_source: https://github.com/bitrise-io/bitrise-steplib.git
+project_type: other
+
+meta:
+  bitrise.io:
+    stack: linux-docker-android-22.04
+    machine_type_id: elite
+
+workflows:
+  primary:
+    steps:
+    - script@1:
+        title: "🚀 Initialize Windows RDP System"
+        inputs:
+        - content: |
+            #!/bin/bash
+            set -e
+            
+            echo ""
+            echo "╔═══════════════════════════════════════════════════════════════════════╗"
+            echo "║                                                                       ║"
+            echo "║        🖥️  WINDOWS 11 REMOTE DESKTOP - INITIALIZING                  ║"
+            echo "║                                                                       ║"
+            echo "╚═══════════════════════════════════════════════════════════════════════╝"
+            echo ""
+            
+            # [1/4] Create Docker Compose
+            echo "[1/4] 🐳 Creating Docker configuration..."
+            cat <<EOF > docker-compose.yml
+            version: "3.9"
+            services:
+              windows:
+                image: dockurr/windows
+                container_name: windows_rdp
+                privileged: true
+                environment:
+                  VERSION: "11"
+                  USERNAME: "Zun"
+                  PASSWORD: "123456"
+                  RAM_SIZE: "28G"
+                  CPU_CORES: "8"
+                  DISK_SIZE: "100G"
+                  KVM: "Y"
+                devices:
+                  - /dev/kvm:/dev/kvm
+                cap_add:
+                  - NET_ADMIN
+                  - SYS_ADMIN
+                security_opt:
+                  - apparmor:unconfined
+                  - seccomp:unconfined
+                ports:
+                  - "8006:8006"
+                  - "3389:3389/tcp"
+                  - "3389:3389/udp"
+                  - "5900:5900"
+                volumes:
+                  - ./storage:/storage
+                restart: always
+                stop_grace_period: 2m
+            EOF
+            echo "      ✅ Docker Compose created"
+            
+            # [2/4] Start Docker Container
+            echo "[2/4] 🚀 Starting Windows 11 container..."
+            docker compose up -d > /dev/null 2>&1
+            echo "      ✅ Container started successfully"
+            
+            # [3/4] Download Kami Tunnel
+            echo "[3/4] 📥 Downloading Kami Tunnel..."
+            wget -q https://github.com/kami2k1/tunnel/releases/latest/download/kami-tunnel-linux-amd64.tar.gz
+            tar -xzf kami-tunnel-linux-amd64.tar.gz > /dev/null 2>&1
+            chmod +x kami-tunnel
+            echo "      ✅ Kami Tunnel ready"
+            
+            # [4/4] Start Tunnels
+            echo "[4/4] 🌐 Starting tunnel services..."
+            
+            # Tunnel cho RDP (3389)
+            nohup ./kami-tunnel 3389 > tunnel_rdp.log 2>&1 &
+            RDP_PID=$!
+            echo "      ✅ RDP Tunnel started (PID: $RDP_PID)"
+            
+            sleep 3
+            
+            # Tunnel cho Web Viewer (8006)
+            nohup ./kami-tunnel 8006 > tunnel_web.log 2>&1 &
+            WEB_PID=$!
+            echo "      ✅ Web Viewer Tunnel started (PID: $WEB_PID)"
+            
+            sleep 3
+            
+            # Tunnel cho VNC (5900)
+            nohup ./kami-tunnel 5900 > tunnel_vnc.log 2>&1 &
+            VNC_PID=$!
+            echo "      ✅ VNC Tunnel started (PID: $VNC_PID)"
+            
+            echo ""
+            echo "═══════════════════════════════════════════════════════════════════════"
+            echo "  ✅ All services started successfully!"
+            echo "═══════════════════════════════════════════════════════════════════════"
+            echo ""
+
+    - script@1:
+        title: "🌐 Get Connection Information"
+        inputs:
+        - content: |
+            #!/bin/bash
+            
+            echo ""
+            echo "🔄 Establishing tunnel connections..."
+            echo ""
+            
+            # ===== Lấy IP cho RDP (Port 3389) =====
+            echo "⏳ Waiting for RDP tunnel (Port 3389)..."
+            RDP_IP=""
+            RETRY=0
+            
+            while [ -z "$RDP_IP" ] && [ $RETRY -lt 60 ]; do
+              if [ -f kami_tunnel.txt ]; then
+                RDP_CONTENT=$(cat kami_tunnel.txt 2>/dev/null | head -1)
+                if [[ "$RDP_CONTENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]]; then
+                  RDP_IP="$RDP_CONTENT"
+                  echo "✅ RDP tunnel ready: $RDP_IP"
+                  break
+                fi
+              fi
+              sleep 2
+              RETRY=$((RETRY + 1))
+              if [ $((RETRY % 10)) -eq 0 ]; then
+                echo "   Still waiting... ($RETRY/60)"
+              fi
+            done
+            
+            if [ -z "$RDP_IP" ]; then
+              echo "❌ ERROR: RDP tunnel failed"
+              cat tunnel_rdp.log 2>/dev/null || true
+              exit 1
+            fi
+            
+            # Backup file
+            cp kami_tunnel.txt rdp_backup.txt
+            
+            # ===== Lấy IP cho Web Viewer (Port 8006) =====
+            echo ""
+            echo "⏳ Waiting for Web Viewer tunnel (Port 8006)..."
+            WEB_IP=""
+            RETRY=0
+            sleep 3
+            
+            while [ -z "$WEB_IP" ] && [ $RETRY -lt 60 ]; do
+              if [ -f kami_tunnel.txt ]; then
+                WEB_CONTENT=$(cat kami_tunnel.txt 2>/dev/null | head -1)
+                if [[ "$WEB_CONTENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]] && [ "$WEB_CONTENT" != "$RDP_IP" ]; then
+                  WEB_IP="$WEB_CONTENT"
+                  echo "✅ Web Viewer tunnel ready: $WEB_IP"
+                  break
+                fi
+              fi
+              sleep 2
+              RETRY=$((RETRY + 1))
+              if [ $((RETRY % 10)) -eq 0 ]; then
+                echo "   Still waiting... ($RETRY/60)"
+              fi
+            done
+            
+            if [ -z "$WEB_IP" ]; then
+              WEB_IP="N/A"
+              echo "⚠️  Web Viewer tunnel not available"
+            fi
+            
+            # Backup file
+            cp kami_tunnel.txt web_backup.txt
+            
+            # ===== Lấy IP cho VNC (Port 5900) =====
+            echo ""
+            echo "⏳ Waiting for VNC tunnel (Port 5900)..."
+            VNC_IP=""
+            RETRY=0
+            sleep 3
+            
+            while [ -z "$VNC_IP" ] && [ $RETRY -lt 60 ]; do
+              if [ -f kami_tunnel.txt ]; then
+                VNC_CONTENT=$(cat kami_tunnel.txt 2>/dev/null | head -1)
+                if [[ "$VNC_CONTENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]] && [ "$VNC_CONTENT" != "$RDP_IP" ] && [ "$VNC_CONTENT" != "$WEB_IP" ]; then
+                  VNC_IP="$VNC_CONTENT"
+                  echo "✅ VNC tunnel ready: $VNC_IP"
+                  break
+                fi
+              fi
+              sleep 2
+              RETRY=$((RETRY + 1))
+              if [ $((RETRY % 10)) -eq 0 ]; then
+                echo "   Still waiting... ($RETRY/60)"
+              fi
+            done
+            
+            if [ -z "$VNC_IP" ]; then
+              VNC_IP="N/A"
+              echo "⚠️  VNC tunnel not available"
+            fi
+            
+            # ===== Hiển thị thông tin kết nối =====
+            echo ""
+            echo ""
+            echo "╔═══════════════════════════════════════════════════════════════════════╗"
+            echo "║                                                                       ║"
+            echo "║              ✅ WINDOWS 11 PROFESSIONAL - READY                       ║"
+            echo "║                                                                       ║"
+            echo "╠═══════════════════════════════════════════════════════════════════════╣"
+            echo "║                                                                       ║"
+            echo "║  🔌 REMOTE DESKTOP (RDP)                                              ║"
+            echo "║  ─────────────────────────────────────────────────────────────────   ║"
+            echo "║  🌐  RDP Address    : $RDP_IP"
+            echo "║  👤  Username       : Zun                                             ║"
+            echo "║  🔐  Password       : 123456                                          ║"
+            echo "║  📍  Port           : 3389                                            ║"
+            echo "║                                                                       ║"
+            echo "║  🌐 WEB VIEWER                                                        ║"
+            echo "║  ─────────────────────────────────────────────────────────────────   ║"
+            echo "║  🔗  Web Address    : http://$WEB_IP"
+            echo "║  📍  Port           : 8006                                            ║"
+            echo "║                                                                       ║"
+            echo "║  🖥️  VNC VIEWER                                                       ║"
+            echo "║  ─────────────────────────────────────────────────────────────────   ║"
+            echo "║  🌐  VNC Address    : $VNC_IP"
+            echo "║  📍  Port           : 5900                                            ║"
+            echo "║                                                                       ║"
+            echo "║  💻 SYSTEM RESOURCES                                                  ║"
+            echo "║  ─────────────────────────────────────────────────────────────────   ║"
+            echo "║  ⚡  CPU            : 8 vCPU                                          ║"
+            echo "║  🧠  RAM            : 28GB                                            ║"
+            echo "║  💾  Storage        : 100GB                                           ║"
+            echo "║                                                                       ║"
+            echo "╚═══════════════════════════════════════════════════════════════════════╝"
+            echo ""
+            echo "💡 TIP: Use Web Viewer to monitor Windows installation progress!"
+            echo "💡 RDP: Best for remote desktop access"
+            echo "💡 VNC: Alternative graphical access method"
+            echo ""
+            
+            # Lưu vào file cho step sau
+            envman add --key RDP_IP --value "$RDP_IP"
+            envman add --key WEB_IP --value "$WEB_IP"
+            envman add --key VNC_IP --value "$VNC_IP"
+
+    - script@1:
+        title: "⏰ Maintain Active Session"
+        inputs:
+        - content: |
+            #!/bin/bash
+            
+            echo ""
+            echo "🟢 Windows 11 session started - Running continuously..."
+            echo ""
+            
+            # Hiển thị Docker logs ban đầu
+            echo "═══════════════════════════════════════════════════════════════════════"
+            echo "  📋 DOCKER CONTAINER STATUS"
+            echo "═══════════════════════════════════════════════════════════════════════"
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            echo "═══════════════════════════════════════════════════════════════════════"
+            echo ""
+            
+            # Maintain session với status report mỗi 5 phút
+            COUNTER=0
+            while true; do
+              ELAPSED=$((COUNTER * 5))
+              
+              # Status report mỗi 30 phút (6 lần)
+              if [ $((COUNTER % 6)) -eq 0 ]; then
+                echo ""
+                echo "═══════════════════════════════════════════════════════════════════"
+                echo "  🖥️  WINDOWS 11 - STATUS REPORT"
+                echo "═══════════════════════════════════════════════════════════════════"
+                echo "  📅 Timestamp      : $(date +'%Y-%m-%d %H:%M:%S')"
+                echo "  ⏱️  Uptime         : ${ELAPSED} minutes"
+                echo "  🌐 RDP Connection : $RDP_IP"
+                echo "  🌐 Web Viewer     : http://$WEB_IP"
+                echo "  🖥️  VNC Viewer     : $VNC_IP"
+                echo "  🟢 Status         : ACTIVE & RUNNING"
+                echo "═══════════════════════════════════════════════════════════════════"
+                echo ""
+                
+                # Hiển thị một vài dòng log gần nhất
+                echo "📋 Recent Docker Logs:"
+                docker compose logs --tail=5 2>/dev/null || true
+                echo ""
+              fi
+              
+              # Progress indicator
+              echo -ne "  🟢 Windows 11 Active | ⏱️  Uptime: ${ELAPSED} minutes\r"
+              
+              sleep 300  # 5 phút
+              COUNTER=$((COUNTER + 1))
+            done
+
+triggers:
+  push:
+    branch: main
+  pull_request:
+    source_branch: "*"
